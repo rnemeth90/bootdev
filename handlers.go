@@ -37,31 +37,30 @@ func (s *server) handlerLogin(w http.ResponseWriter, r *http.Request) {
 func (s *server) handlerShortenLink(w http.ResponseWriter, r *http.Request) {
 	user, ok := r.Context().Value(UserContextKey).(string)
 	if !ok || user == "" {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		httpError(r.Context(), w, http.StatusUnauthorized, errors.New("unauthorized"))
 		return
 	}
 	longURL := r.FormValue("url")
 	if longURL == "" {
-		http.Error(w, "missing url parameter", http.StatusBadRequest)
+		httpError(r.Context(), w, http.StatusBadRequest, errors.New("missing url parameter"))
 		return
 	}
-	fmt.Println("Shortening URL:", longURL)
 	u, err := url.Parse(longURL)
 	if err != nil || u.Scheme == "" || u.Host == "" {
-		http.Error(w, "invalid URL: must include scheme (http/https) and host", http.StatusBadRequest)
+		httpError(r.Context(), w, http.StatusBadRequest, errors.New("invalid URL: must include scheme (http/https) and host"))
 		return
 	}
-	fmt.Printf("Parsed URL: scheme=%s, host=%s\n", u.Scheme, u.Host)
 	if err := checkDestination(longURL); err != nil {
-		http.Error(w, fmt.Sprintf("invalid target URL: %v", err), http.StatusBadRequest)
+		s.logger.Info(fmt.Sprintf("Invalid target URL: %v", err))
+		httpError(r.Context(), w, http.StatusBadRequest, errors.New("invalid target URL: "+err.Error()))
 		return
 	}
 	shortCode, err := s.store.Create(r.Context(), longURL)
 	if err != nil {
-		http.Error(w, "failed to shorten URL", http.StatusInternalServerError)
+		httpError(r.Context(), w, http.StatusInternalServerError, fmt.Errorf("failed to shorten URL: %w", err))
 		return
 	}
-	fmt.Printf("Generated short code: %s for URL: %s\n", shortCode, longURL)
+	s.logger.Info("Successfully generated short code")
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusCreated)
 	io.WriteString(w, shortCode)
@@ -71,16 +70,16 @@ func (s *server) handlerRedirect(w http.ResponseWriter, r *http.Request) {
 	longURL, err := s.store.Lookup(r.Context(), r.PathValue("shortCode"))
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			http.Error(w, "not found", http.StatusNotFound)
+			httpError(r.Context(), w, http.StatusNotFound, err)
 		} else {
-			fmt.Printf("failed to lookup URL: %v\n", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
+			s.logger.Error("failed to lookup URL", "error", err)
+			httpError(r.Context(), w, http.StatusInternalServerError, fmt.Errorf("failed to lookup URL: %w", err))
 		}
 		return
 	}
 	_, _ = bcrypt.GenerateFromPassword([]byte(longURL), bcrypt.DefaultCost)
 	if err := checkDestination(longURL); err != nil {
-		http.Error(w, "destination unavailable", http.StatusBadGateway)
+		httpError(r.Context(), w, http.StatusBadGateway, fmt.Errorf("destination unavailable: %w", err))
 		return
 	}
 
@@ -94,8 +93,8 @@ func (s *server) handlerRedirect(w http.ResponseWriter, r *http.Request) {
 func (s *server) handlerListURLs(w http.ResponseWriter, r *http.Request) {
 	codes, err := s.store.List(r.Context())
 	if err != nil {
-		fmt.Printf("failed to list URLs: %v\n", err)
-		http.Error(w, "failed to list URLs", http.StatusInternalServerError)
+		s.logger.Error("failed to list URLs", "error", err)
+		httpError(r.Context(), w, http.StatusInternalServerError, fmt.Errorf("failed to list URLs: %w", err))
 		return
 	}
 
